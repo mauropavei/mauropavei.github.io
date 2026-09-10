@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; img-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Trading-AI Stable Owner Enrollment</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 56rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.45; }
+    pre { white-space: pre-wrap; word-break: break-word; border: 1px solid currentColor; padding: 1rem; }
+    button { font: inherit; padding: .65rem 1rem; }
+    .warn { font-weight: 700; }
+  </style>
+</head>
+<body>
+  <h1>Trading-AI stable owner enrollment</h1>
+  <p class="warn">Candidate enrollment only. This page does not activate C3b, signer trust, GitHub status publication, VPS access, or capital authority.</p>
+  <p>Verify the exact source SHA and digests below before creating the stable-origin credential candidate.</p>
+  <pre id="request">No enrollment request loaded.</pre>
+  <button id="enroll" disabled>Create stable-origin credential candidate</button>
+  <pre id="evidence">No evidence produced.</pre>
+<script>
+'use strict';
+
+const EXPECTED_ORIGIN = 'https://mauropavei.github.io';
+const EXPECTED_RP_ID = 'mauropavei.github.io';
+const EXPECTED_PROJECT = 'trading-ai';
+const EXPECTED_REPOSITORY = 'mauropavei/Trading-AI';
+const EXPECTED_ACTION = 'C3B_STABLE_OWNER_CREDENTIAL_ENROLLMENT';
+const EXPECTED_EFFECT = 'CREATE_STABLE_OWNER_TRUST_CANDIDATE_ONLY_NO_SIGNER_ACTIVATION';
+const EXPECTED_CLASS = 'PLATFORM_RND';
+const MAX_TTL_MS = 600000;
+const REQUEST_FIELDS = [
+  'action_id', 'authority_effect', 'authority_surface_manifest_digest',
+  'bootstrap_credential_id_b64url', 'bootstrap_evidence_sha256', 'credential_class',
+  'exact_source_sha', 'expires_at', 'issued_at', 'nonce', 'origin',
+  'policy_digest', 'prior_owner_trust_digest', 'project_id', 'repository',
+  'rp_id', 'schema_version', 'user_handle_b64url'
+].sort();
+
+const requestBox = document.getElementById('request');
+const evidenceBox = document.getElementById('evidence');
+const enrollButton = document.getElementById('enroll');
+let requestObject = null;
+let canonicalRequestBytes = null;
+
+function b64urlToBytes(value) {
+  if (typeof value !== 'string' || value.length === 0 || value.includes('=') || !/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new Error('value must be canonical unpadded base64url');
+  }
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = normalized + '='.repeat((4 - normalized.length % 4) % 4);
+  const binary = atob(padded);
+  const bytes = Uint8Array.from(binary, ch => ch.charCodeAt(0));
+  if (bytesToB64url(bytes) !== value) throw new Error('non-canonical base64url');
+  return bytes;
+}
+
+function bytesToB64url(value) {
+  const bytes = new Uint8Array(value);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function canonicalJson(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return JSON.stringify(value);
+  return '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + canonicalJson(value[key])).join(',') + '}';
+}
+
+function bytesToHex(value) {
+  return Array.from(new Uint8Array(value), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function validateRequest(request, sourceText) {
+  if (!request || typeof request !== 'object' || Array.isArray(request)) throw new Error('request root must be an object');
+  const fields = Object.keys(request).sort();
+  if (JSON.stringify(fields) !== JSON.stringify(REQUEST_FIELDS)) throw new Error('enrollment request field set mismatch');
+  if (canonicalJson(request) !== sourceText) throw new Error('request bytes are not canonical JSON');
+  if (request.schema_version !== '1.0.0' || request.project_id !== EXPECTED_PROJECT || request.repository !== EXPECTED_REPOSITORY) {
+    throw new Error('request identity mismatch');
+  }
+  if (request.action_id !== EXPECTED_ACTION || request.authority_effect !== EXPECTED_EFFECT) throw new Error('request action/effect mismatch');
+  if (request.origin !== EXPECTED_ORIGIN || request.rp_id !== EXPECTED_RP_ID) throw new Error('stable origin/RP mismatch');
+  if (request.credential_class !== EXPECTED_CLASS) throw new Error('this bootstrap portal enrolls PLATFORM_RND only');
+  if (!/^[0-9a-f]{40}$/.test(request.exact_source_sha)) throw new Error('invalid exact source SHA');
+  for (const field of ['policy_digest', 'authority_surface_manifest_digest', 'prior_owner_trust_digest', 'bootstrap_evidence_sha256']) {
+    if (typeof request[field] !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(request[field])) throw new Error('invalid digest: ' + field);
+  }
+  if (typeof request.nonce !== 'string' || !/^[A-Za-z0-9._:-]{16,200}$/.test(request.nonce)) throw new Error('invalid nonce');
+  b64urlToBytes(request.bootstrap_credential_id_b64url);
+  b64urlToBytes(request.user_handle_b64url);
+  const issued = Date.parse(request.issued_at);
+  const expires = Date.parse(request.expires_at);
+  const now = Date.now();
+  if (!Number.isFinite(issued) || !Number.isFinite(expires) || expires <= issued || expires - issued > MAX_TTL_MS) throw new Error('invalid request lifetime');
+  if (now < issued || now > expires) throw new Error('enrollment request is not fresh');
+}
+
+function loadRequest() {
+  if (window.location.origin !== EXPECTED_ORIGIN) throw new Error('portal must run only on the frozen HTTPS origin');
+  if (!window.location.hash.startsWith('#enroll=')) throw new Error('expected #enroll=<canonical-request-base64url>');
+  const fragment = window.location.hash.slice('#enroll='.length);
+  if (!fragment || fragment.includes('&') || fragment.includes('?')) throw new Error('unexpected fragment parameters');
+  const bytes = b64urlToBytes(fragment);
+  const text = new TextDecoder('utf-8', {fatal: true}).decode(bytes);
+  const request = JSON.parse(text);
+  validateRequest(request, text);
+  requestObject = request;
+  canonicalRequestBytes = bytes;
+  requestBox.textContent = JSON.stringify(request, null, 2);
+  enrollButton.disabled = false;
+}
+
+async function createCredentialCandidate() {
+  if (!requestObject || !canonicalRequestBytes) throw new Error('no validated request loaded');
+  if (window.location.origin !== EXPECTED_ORIGIN) throw new Error('origin changed after request validation');
+  const challenge = new Uint8Array(await crypto.subtle.digest('SHA-256', canonicalRequestBytes));
+  const credential = await navigator.credentials.create({
+    publicKey: {
+      challenge,
+      rp: { id: EXPECTED_RP_ID, name: 'Trading-AI Owner Approval' },
+      user: {
+        id: b64urlToBytes(requestObject.user_handle_b64url),
+        name: 'trading-ai:owner',
+        displayName: 'Trading-AI Owner'
+      },
+      pubKeyCredParams: [
+        { type: 'public-key', alg: -7 },
+        { type: 'public-key', alg: -8 }
+      ],
+      authenticatorSelection: {
+        residentKey: 'required',
+        userVerification: 'required'
+      },
+      attestation: 'none',
+      timeout: 120000
+    }
+  });
+  if (!credential || credential.type !== 'public-key') throw new Error('no WebAuthn public-key credential returned');
+  const response = credential.response;
+  const transports = typeof response.getTransports === 'function' ? response.getTransports() : [];
+  const requestHash = 'sha256:' + bytesToHex(challenge);
+  const credentialResponse = {
+    id: credential.id,
+    rawId: bytesToB64url(credential.rawId),
+    type: credential.type,
+    response: {
+      attestationObject: bytesToB64url(response.attestationObject),
+      clientDataJSON: bytesToB64url(response.clientDataJSON),
+      transports
+    },
+    clientExtensionResults: credential.getClientExtensionResults(),
+    authenticatorAttachment: credential.authenticatorAttachment || null
+  };
+  const evidence = {
+    schema_version: '1.0.0',
+    project_id: EXPECTED_PROJECT,
+    repository: EXPECTED_REPOSITORY,
+    action_id: EXPECTED_ACTION,
+    request_sha256: requestHash,
+    exact_source_sha: requestObject.exact_source_sha,
+    credential_id_b64url: bytesToB64url(credential.rawId),
+    credential_response: credentialResponse,
+    credential_class: EXPECTED_CLASS,
+    origin: EXPECTED_ORIGIN,
+    rp_id: EXPECTED_RP_ID,
+    user_handle_b64url: requestObject.user_handle_b64url,
+    evidence_state: 'PUBLIC_STABLE_OWNER_CREDENTIAL_CANDIDATE',
+    private_material_included: false,
+    production_trust_active: false,
+    authority_granted: false
+  };
+  evidenceBox.textContent = canonicalJson(evidence);
+}
+
+enrollButton.addEventListener('click', () => {
+  enrollButton.disabled = true;
+  evidenceBox.textContent = 'Waiting for WebAuthn registration...';
+  createCredentialCandidate().catch(error => {
+    evidenceBox.textContent = 'DENY: ' + String(error);
+    enrollButton.disabled = false;
+  });
+});
+
+loadRequest().catch(error => {
+  requestBox.textContent = 'DENY: ' + String(error);
+  evidenceBox.textContent = 'No credential created.';
+});
+</script>
+</body>
+</html>
