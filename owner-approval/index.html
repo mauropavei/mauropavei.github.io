@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Owner Approval</title>
+</head>
+<body>
+  <main>
+    <h1>Owner Approval</h1>
+    <p id="state">C3a static candidate — no authority is granted by this page.</p>
+    <label for="credential-class">Credential class</label>
+    <select id="credential-class">
+      <option value="PLATFORM_RND">PLATFORM_RND</option>
+      <option value="HARDWARE_FIDO2_PRIMARY">HARDWARE_FIDO2_PRIMARY</option>
+      <option value="HARDWARE_FIDO2_RECOVERY">HARDWARE_FIDO2_RECOVERY</option>
+    </select>
+    <button id="approve" type="button">Create WebAuthn evidence</button>
+    <textarea id="evidence" rows="18" cols="80" readonly aria-label="Public evidence"></textarea>
+  </main>
+  <script src="portal.js"></script>
+</body>
+</html>
