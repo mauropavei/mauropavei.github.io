@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; img-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; font-src 'none'; manifest-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Trading-AI C3b Owner Authorization</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 56rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.45; }
+    pre { white-space: pre-wrap; word-break: break-word; border: 1px solid currentColor; padding: 1rem; }
+    button { font: inherit; padding: .65rem 1rem; margin-right: .5rem; }
+    .warn { font-weight: 700; }
+  </style>
+</head>
+<body>
+  <h1>Trading-AI C3b owner authorization</h1>
+  <p class="warn">Evidence only. This page cannot adopt owner trust, provision a signing secret, activate a verifier, open the VPS channel, execute/recover a task, or grant capital authority.</p>
+  <p>The approval is credential-defined, not device-defined. For policy-eligible <code>PLATFORM_RND</code> Level-2 actions, the same synchronized Trading-AI passkey may be presented from a compatible iPhone or Mac. Level-3 hardware requirements are not weakened.</p>
+  <p>Verify the exact source SHA and digests below. Approval applies only to this exact source-scoped <code>C3B_SIGNER_ACTIVATION</code> request and still requires protected replay reservation before any effect.</p>
+  <pre id="request">No request loaded.</pre>
+  <button id="approve" disabled>Authorize exact Trading-AI C3b activation</button>
+  <button id="copy" disabled>Copy public evidence</button>
+  <pre id="evidence">No evidence produced.</pre>
+<script>
+'use strict';
+
+const EXPECTED_ORIGIN = 'https://mauropavei.github.io';
+const EXPECTED_RP_ID = 'mauropavei.github.io';
+const PROJECT_ID = 'trading-ai';
+const REPOSITORY = 'mauropavei/Trading-AI';
+const ACTION_ID = 'C3B_SIGNER_ACTIVATION';
+const AUTHORITY_EFFECT = 'ACTIVATE_PRECAPITAL_SIGNER_AUTHORITY';
+const CREDENTIAL_CLASS = 'PLATFORM_RND';
+const EVIDENCE_STATE = 'PUBLIC_CANDIDATE_UNVERIFIED_C3A';
+const MAX_TTL_MS = 600000;
+const REQUEST_FIELDS = [
+  'action_id', 'artifact_digest', 'authority_effect', 'authority_surface_manifest_digest',
+  'base_sha', 'exact_pr_head_sha', 'exact_source_sha', 'expires_at', 'issued_at',
+  'nonce', 'policy_digest', 'pr_number', 'prior_owner_trust_digest',
+  'prior_registry_digest', 'project_id', 'repository'
+].sort();
+
+const requestBox = document.getElementById('request');
+const evidenceBox = document.getElementById('evidence');
+const approveButton = document.getElementById('approve');
+const copyButton = document.getElementById('copy');
+let requestObject = null;
+let requestBytes = null;
+let publicEvidenceText = null;
+
+function bytesToB64url(value) {
+  const bytes = new Uint8Array(value);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function b64urlToBytes(value) {
+  if (typeof value !== 'string' || value.length === 0 || value.includes('=') || !/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new Error('request must be canonical unpadded base64url');
+  }
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = normalized + '='.repeat((4 - normalized.length % 4) % 4);
+  const binary = atob(padded);
+  const bytes = Uint8Array.from(binary, ch => ch.charCodeAt(0));
+  if (bytesToB64url(bytes) !== value) throw new Error('request base64url is not canonical');
+  return bytes;
+}
+
+function canonicalJson(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return JSON.stringify(value);
+  return '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + canonicalJson(value[key])).join(',') + '}';
+}
+
+function bytesToHex(value) {
+  return Array.from(new Uint8Array(value), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function requireDigest(value, field) {
+  if (typeof value !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(value)) throw new Error('invalid digest: ' + field);
+}
+
+function validateRequest(value, sourceText) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('request root must be an object');
+  if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(REQUEST_FIELDS)) throw new Error('request field set mismatch');
+  if (canonicalJson(value) !== sourceText) throw new Error('request bytes are not canonical JSON');
+  if (value.project_id !== PROJECT_ID || value.repository !== REPOSITORY) throw new Error('wrong project/repository');
+  if (value.action_id !== ACTION_ID || value.authority_effect !== AUTHORITY_EFFECT) throw new Error('wrong C3b action/effect');
+  if (value.pr_number !== null || value.exact_pr_head_sha !== null || value.base_sha !== null) throw new Error('source-scoped C3b request must keep PR metadata null');
+  if (typeof value.exact_source_sha !== 'string' || !/^[0-9a-f]{40}$/.test(value.exact_source_sha)) throw new Error('invalid exact source SHA');
+  for (const field of ['policy_digest', 'authority_surface_manifest_digest', 'artifact_digest', 'prior_owner_trust_digest', 'prior_registry_digest']) requireDigest(value[field], field);
+  if (typeof value.nonce !== 'string' || !/^[A-Za-z0-9._:-]{16,200}$/.test(value.nonce)) throw new Error('invalid nonce');
+  const issued = Date.parse(value.issued_at);
+  const expires = Date.parse(value.expires_at);
+  const now = Date.now();
+  if (!Number.isFinite(issued) || !Number.isFinite(expires) || expires <= issued || expires - issued > MAX_TTL_MS) throw new Error('invalid request lifetime');
+  if (now < issued || now > expires) throw new Error('request is not fresh');
+}
+
+function serializeAssertion(credential) {
+  const id = bytesToB64url(credential.rawId);
+  if (credential.id !== id) throw new Error('credential id/rawId mismatch');
+  const extensions = credential.getClientExtensionResults();
+  if (Object.keys(extensions).length !== 0) throw new Error('unexpected WebAuthn client extensions');
+  const userHandle = credential.response.userHandle;
+  if (userHandle === null) throw new Error('discoverable Trading-AI passkey must return project user handle');
+  return {
+    credentialId: id,
+    clientDataJSON: bytesToB64url(credential.response.clientDataJSON),
+    authenticatorData: bytesToB64url(credential.response.authenticatorData),
+    signature: bytesToB64url(credential.response.signature),
+    userHandle: bytesToB64url(userHandle)
+  };
+}
+
+async function loadRequest() {
+  if (window.location.origin !== EXPECTED_ORIGIN || window.location.hostname !== EXPECTED_RP_ID) {
+    throw new Error('C3b portal must run only on the frozen Trading-AI HTTPS origin/RP');
+  }
+  const params = new URLSearchParams(window.location.hash.slice(1));
+  const requestB64url = params.get('request');
+  if (!requestB64url || params.size !== 1) throw new Error('expected only #request=<canonical-source-scoped-request-base64url>');
+  requestBytes = b64urlToBytes(requestB64url);
+  const sourceText = new TextDecoder('utf-8', {fatal: true}).decode(requestBytes);
+  requestObject = JSON.parse(sourceText);
+  validateRequest(requestObject, sourceText);
+  requestBox.textContent = JSON.stringify(requestObject, null, 2);
+  approveButton.disabled = false;
+}
+
+approveButton.addEventListener('click', async () => {
+  approveButton.disabled = true;
+  copyButton.disabled = true;
+  publicEvidenceText = null;
+  try {
+    const sourceText = new TextDecoder('utf-8', {fatal: true}).decode(requestBytes);
+    validateRequest(requestObject, sourceText);
+    const challenge = new Uint8Array(await crypto.subtle.digest('SHA-256', requestBytes));
+    const credential = await navigator.credentials.get({
+      publicKey: {
+        challenge,
+        rpId: EXPECTED_RP_ID,
+        userVerification: 'required',
+        timeout: 120000
+      }
+    });
+    if (!credential || credential.type !== 'public-key') throw new Error('no WebAuthn public-key credential returned');
+    const assertion = serializeAssertion(credential);
+    const requestDigest = 'sha256:' + bytesToHex(challenge);
+    const evidence = {
+      schema_version: '1.0.0',
+      project_id: PROJECT_ID,
+      repository: REPOSITORY,
+      action_id: ACTION_ID,
+      request_digest: requestDigest,
+      challenge_b64url: bytesToB64url(challenge),
+      credential_id_b64url: assertion.credentialId,
+      client_data_json_b64url: assertion.clientDataJSON,
+      authenticator_data_b64url: assertion.authenticatorData,
+      signature_b64url: assertion.signature,
+      user_handle_b64url: assertion.userHandle,
+      credential_class: CREDENTIAL_CLASS,
+      origin: EXPECTED_ORIGIN,
+      rp_id: EXPECTED_RP_ID,
+      user_verification: 'REQUIRED_VERIFIED',
+      exact_pr_head_sha: null,
+      exact_source_sha: requestObject.exact_source_sha,
+      evidence_state: EVIDENCE_STATE,
+      private_material_included: false,
+      authority_granted_by_shape_validation: false
+    };
+    publicEvidenceText = 'TRADING-AI-C3B-SIGNER-ACTIVATION-EVIDENCE-V1:\n' + canonicalJson(evidence);
+    evidenceBox.textContent = publicEvidenceText;
+    copyButton.disabled = false;
+  } catch (error) {
+    evidenceBox.textContent = 'Authorization failed: ' + String(error);
+    approveButton.disabled = false;
+  }
+});
+
+copyButton.addEventListener('click', async () => {
+  if (!publicEvidenceText) return;
+  await navigator.clipboard.writeText(publicEvidenceText);
+});
+
+loadRequest().catch(error => {
+  requestBox.textContent = 'Request rejected: ' + String(error);
+});
+</script>
+</body>
+</html>
