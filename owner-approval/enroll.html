@@ -5,20 +5,21 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; img-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
-  <title>Trading-AI Stable Owner Enrollment</title>
+  <title>Trading-AI Owner Credential Ceremony</title>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 56rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.45; }
     pre { white-space: pre-wrap; word-break: break-word; border: 1px solid currentColor; padding: 1rem; }
-    button { font: inherit; padding: .65rem 1rem; }
+    button { font: inherit; padding: .65rem 1rem; margin-right: .5rem; }
     .warn { font-weight: 700; }
   </style>
 </head>
 <body>
-  <h1>Trading-AI stable owner enrollment</h1>
-  <p class="warn">Candidate enrollment only. This page does not activate C3b, signer trust, GitHub status publication, VPS access, or capital authority.</p>
-  <p>Verify the exact source SHA and digests below before creating the stable-origin credential candidate.</p>
-  <pre id="request">No enrollment request loaded.</pre>
-  <button id="enroll" disabled>Create stable-origin credential candidate</button>
+  <h1 id="heading">Trading-AI owner credential ceremony</h1>
+  <p id="warning" class="warn">No request loaded. No authority is active.</p>
+  <p id="instructions">The URL fragment selects one exact Trading-AI owner ceremony.</p>
+  <pre id="request">No request loaded.</pre>
+  <button id="action" disabled>Continue</button>
+  <button id="copy" disabled>Copy public evidence</button>
   <pre id="evidence">No evidence produced.</pre>
 <script>
 'use strict';
@@ -27,24 +28,57 @@ const EXPECTED_ORIGIN = 'https://mauropavei.github.io';
 const EXPECTED_RP_ID = 'mauropavei.github.io';
 const EXPECTED_PROJECT = 'trading-ai';
 const EXPECTED_REPOSITORY = 'mauropavei/Trading-AI';
-const EXPECTED_ACTION = 'C3B_STABLE_OWNER_CREDENTIAL_ENROLLMENT';
-const EXPECTED_EFFECT = 'CREATE_STABLE_OWNER_TRUST_CANDIDATE_ONLY_NO_SIGNER_ACTIVATION';
+const ENROLL_ACTION = 'C3B_STABLE_OWNER_CREDENTIAL_ENROLLMENT';
+const ENROLL_EFFECT = 'CREATE_STABLE_OWNER_TRUST_CANDIDATE_ONLY_NO_SIGNER_ACTIVATION';
+const ADOPT_ACTION = 'C3B_STABLE_OWNER_TRUST_ADOPTION';
+const ADOPT_EFFECT = 'ADOPT_EXACT_STABLE_OWNER_TRUST_ONLY_NO_SIGNER_NO_EXECUTION';
+const PRIOR_OWNER_STATE = 'PUBLIC_C2_OWNER_TRUST_ADOPTION_AUTHORIZATION';
+const CANDIDATE_POSSESSION_STATE = 'PUBLIC_STABLE_OWNER_CANDIDATE_POSSESSION_ASSERTION';
+const DUAL_PROOF_STATE = 'PUBLIC_OWNER_TRUST_ADOPTION_DUAL_PROOF_BUNDLE';
 const EXPECTED_CLASS = 'PLATFORM_RND';
 const MAX_TTL_MS = 600000;
-const REQUEST_FIELDS = [
-  'action_id', 'authority_effect', 'authority_surface_manifest_digest',
-  'bootstrap_credential_id_b64url', 'bootstrap_evidence_sha256', 'credential_class',
-  'exact_source_sha', 'expires_at', 'issued_at', 'nonce', 'origin',
-  'policy_digest', 'prior_owner_trust_digest', 'project_id', 'repository',
-  'rp_id', 'schema_version', 'user_handle_b64url'
+const ENROLL_REQUEST_FIELDS = [
+  'action_id','authority_effect','authority_surface_manifest_digest',
+  'bootstrap_credential_id_b64url','bootstrap_evidence_sha256','credential_class',
+  'exact_source_sha','expires_at','issued_at','nonce','origin','policy_digest',
+  'prior_owner_trust_digest','project_id','repository','rp_id','schema_version',
+  'user_handle_b64url'
+].sort();
+const ADOPT_REQUEST_FIELDS = [
+  'action_id','authority_effect','authority_surface_manifest_digest',
+  'candidate_credential_id_b64url','candidate_evidence_digest','candidate_origin',
+  'candidate_public_key_b64url','candidate_rp_id','candidate_user_handle_b64url',
+  'exact_source_sha','expires_at','issued_at','nonce','policy_digest',
+  'prior_owner_trust_digest','project_id','repository','resulting_owner_trust_digest',
+  'schema_version'
+].sort();
+const PRIOR_OWNER_FIELDS = [
+  'action_id','c3b_activated','credential_id_b64url','credential_response',
+  'evidence_state','exact_source_sha','origin','production_trust_adopted',
+  'project_id','repository','request_b64url','request_sha256','rp_id',
+  'schema_version','signer_secret_present','verified_at_utc','vps_channel'
 ].sort();
 
+const heading = document.getElementById('heading');
+const warning = document.getElementById('warning');
+const instructions = document.getElementById('instructions');
 const requestBox = document.getElementById('request');
 const evidenceBox = document.getElementById('evidence');
-const enrollButton = document.getElementById('enroll');
+const actionButton = document.getElementById('action');
+const copyButton = document.getElementById('copy');
+let mode = null;
 let requestObject = null;
+let priorOwnerEvidence = null;
 let canonicalRequestBytes = null;
+let canonicalRequestB64url = null;
+let evidenceText = null;
 
+function bytesToB64url(value) {
+  const bytes = new Uint8Array(value);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
 function b64urlToBytes(value) {
   if (typeof value !== 'string' || value.length === 0 || value.includes('=') || !/^[A-Za-z0-9_-]+$/.test(value)) {
     throw new Error('value must be canonical unpadded base64url');
@@ -56,84 +90,124 @@ function b64urlToBytes(value) {
   if (bytesToB64url(bytes) !== value) throw new Error('non-canonical base64url');
   return bytes;
 }
-
-function bytesToB64url(value) {
-  const bytes = new Uint8Array(value);
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-}
-
 function canonicalJson(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return JSON.stringify(value);
   return '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + canonicalJson(value[key])).join(',') + '}';
 }
-
 function bytesToHex(value) {
   return Array.from(new Uint8Array(value), byte => byte.toString(16).padStart(2, '0')).join('');
 }
-
-function validateRequest(request, sourceText) {
-  if (!request || typeof request !== 'object' || Array.isArray(request)) throw new Error('request root must be an object');
-  const fields = Object.keys(request).sort();
-  if (JSON.stringify(fields) !== JSON.stringify(REQUEST_FIELDS)) throw new Error('enrollment request field set mismatch');
-  if (canonicalJson(request) !== sourceText) throw new Error('request bytes are not canonical JSON');
-  if (request.schema_version !== '1.0.0' || request.project_id !== EXPECTED_PROJECT || request.repository !== EXPECTED_REPOSITORY) {
-    throw new Error('request identity mismatch');
-  }
-  if (request.action_id !== EXPECTED_ACTION || request.authority_effect !== EXPECTED_EFFECT) throw new Error('request action/effect mismatch');
-  if (request.origin !== EXPECTED_ORIGIN || request.rp_id !== EXPECTED_RP_ID) throw new Error('stable origin/RP mismatch');
-  if (request.credential_class !== EXPECTED_CLASS) throw new Error('this bootstrap portal enrolls PLATFORM_RND only');
-  if (!/^[0-9a-f]{40}$/.test(request.exact_source_sha)) throw new Error('invalid exact source SHA');
-  for (const field of ['policy_digest', 'authority_surface_manifest_digest', 'prior_owner_trust_digest', 'bootstrap_evidence_sha256']) {
-    if (typeof request[field] !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(request[field])) throw new Error('invalid digest: ' + field);
-  }
-  if (typeof request.nonce !== 'string' || !/^[A-Za-z0-9._:-]{16,200}$/.test(request.nonce)) throw new Error('invalid nonce');
-  b64urlToBytes(request.bootstrap_credential_id_b64url);
-  b64urlToBytes(request.user_handle_b64url);
+function requireExactFields(value, fields, name) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(name + ' root must be an object');
+  if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(fields)) throw new Error(name + ' field set mismatch');
+}
+function requireDigest(value, name) {
+  if (typeof value !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(value)) throw new Error('invalid digest: ' + name);
+}
+function validateTimes(request, label) {
   const issued = Date.parse(request.issued_at);
   const expires = Date.parse(request.expires_at);
   const now = Date.now();
-  if (!Number.isFinite(issued) || !Number.isFinite(expires) || expires <= issued || expires - issued > MAX_TTL_MS) throw new Error('invalid request lifetime');
-  if (now < issued || now > expires) throw new Error('enrollment request is not fresh');
+  if (!Number.isFinite(issued) || !Number.isFinite(expires) || expires <= issued || expires - issued > MAX_TTL_MS) {
+    throw new Error(label + ' request lifetime invalid');
+  }
+  if (now < issued || now > expires) throw new Error(label + ' request is not fresh');
 }
-
-function loadRequest() {
+function validateEnrollmentRequest(request, sourceText) {
+  requireExactFields(request, ENROLL_REQUEST_FIELDS, 'enrollment request');
+  if (canonicalJson(request) !== sourceText) throw new Error('request bytes are not canonical JSON');
+  if (request.schema_version !== '1.0.0' || request.project_id !== EXPECTED_PROJECT || request.repository !== EXPECTED_REPOSITORY) throw new Error('request identity mismatch');
+  if (request.action_id !== ENROLL_ACTION || request.authority_effect !== ENROLL_EFFECT) throw new Error('request action/effect mismatch');
+  if (request.origin !== EXPECTED_ORIGIN || request.rp_id !== EXPECTED_RP_ID) throw new Error('stable origin/RP mismatch');
+  if (request.credential_class !== EXPECTED_CLASS) throw new Error('this portal enrolls Trading-AI PLATFORM_RND only');
+  if (!/^[0-9a-f]{40}$/.test(request.exact_source_sha)) throw new Error('invalid exact source SHA');
+  for (const field of ['policy_digest','authority_surface_manifest_digest','prior_owner_trust_digest','bootstrap_evidence_sha256']) requireDigest(request[field], field);
+  if (typeof request.nonce !== 'string' || !/^[A-Za-z0-9._:-]{16,200}$/.test(request.nonce)) throw new Error('invalid nonce');
+  b64urlToBytes(request.bootstrap_credential_id_b64url);
+  b64urlToBytes(request.user_handle_b64url);
+  validateTimes(request, 'enrollment');
+}
+function validateAdoptionRequest(request, sourceText) {
+  requireExactFields(request, ADOPT_REQUEST_FIELDS, 'trust-adoption request');
+  if (canonicalJson(request) !== sourceText) throw new Error('adoption request bytes are not canonical JSON');
+  if (request.schema_version !== '1.0.0' || request.project_id !== EXPECTED_PROJECT || request.repository !== EXPECTED_REPOSITORY) throw new Error('adoption identity mismatch');
+  if (request.action_id !== ADOPT_ACTION || request.authority_effect !== ADOPT_EFFECT) throw new Error('adoption action/effect mismatch');
+  if (request.candidate_origin !== EXPECTED_ORIGIN || request.candidate_rp_id !== EXPECTED_RP_ID) throw new Error('adoption stable origin/RP mismatch');
+  if (!/^[0-9a-f]{40}$/.test(request.exact_source_sha)) throw new Error('invalid adoption exact source SHA');
+  for (const field of ['policy_digest','authority_surface_manifest_digest','prior_owner_trust_digest','candidate_evidence_digest','resulting_owner_trust_digest']) requireDigest(request[field], field);
+  b64urlToBytes(request.candidate_credential_id_b64url);
+  b64urlToBytes(request.candidate_public_key_b64url);
+  b64urlToBytes(request.candidate_user_handle_b64url);
+  if (typeof request.nonce !== 'string' || !/^tai-c3b-adopt-[A-Za-z0-9_-]{20,160}$/.test(request.nonce)) throw new Error('invalid adoption nonce');
+  validateTimes(request, 'trust-adoption');
+}
+async function validatePriorOwnerTransport(evidence, sourceText) {
+  requireExactFields(evidence, PRIOR_OWNER_FIELDS, 'prior-owner evidence');
+  if (canonicalJson(evidence) !== sourceText) throw new Error('prior-owner evidence bytes are not canonical JSON');
+  if (evidence.schema_version !== '1.0.0' || evidence.project_id !== EXPECTED_PROJECT || evidence.repository !== EXPECTED_REPOSITORY) throw new Error('prior-owner identity mismatch');
+  if (evidence.action_id !== ADOPT_ACTION || evidence.evidence_state !== PRIOR_OWNER_STATE) throw new Error('prior-owner action/state mismatch');
+  if (evidence.exact_source_sha !== requestObject.exact_source_sha) throw new Error('prior-owner exact source mismatch');
+  if (evidence.request_b64url !== canonicalRequestB64url) throw new Error('prior-owner request bytes mismatch');
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', canonicalRequestBytes));
+  if (evidence.request_sha256 !== 'sha256:' + bytesToHex(digest)) throw new Error('prior-owner request digest mismatch');
+  if (evidence.rp_id !== 'localhost' || evidence.origin !== 'http://localhost:8766') throw new Error('prior-owner RP/origin mismatch');
+  if (evidence.production_trust_adopted !== false || evidence.c3b_activated !== false || evidence.signer_secret_present !== false || evidence.vps_channel !== 'NON_OPERATIONAL') throw new Error('prior-owner evidence overclaims effects');
+  if (!evidence.credential_response || typeof evidence.credential_response !== 'object') throw new Error('prior-owner credential response missing');
+}
+async function loadRequest() {
   if (window.location.origin !== EXPECTED_ORIGIN) throw new Error('portal must run only on the frozen HTTPS origin');
-  if (!window.location.hash.startsWith('#enroll=')) throw new Error('expected #enroll=<canonical-request-base64url>');
-  const fragment = window.location.hash.slice('#enroll='.length);
-  if (!fragment || fragment.includes('&') || fragment.includes('?')) throw new Error('unexpected fragment parameters');
-  const bytes = b64urlToBytes(fragment);
-  const text = new TextDecoder('utf-8', {fatal: true}).decode(bytes);
-  const request = JSON.parse(text);
-  validateRequest(request, text);
-  requestObject = request;
-  canonicalRequestBytes = bytes;
-  requestBox.textContent = JSON.stringify(request, null, 2);
-  enrollButton.disabled = false;
-}
+  const params = new URLSearchParams(window.location.hash.slice(1));
+  const encodedAdoption = params.get('adopt');
+  const encodedOwner = params.get('owner');
+  const encodedEnrollment = params.get('enroll');
 
+  if (encodedAdoption && encodedOwner && params.size === 2) {
+    mode = 'adopt';
+    canonicalRequestB64url = encodedAdoption;
+    canonicalRequestBytes = b64urlToBytes(encodedAdoption);
+    const requestText = new TextDecoder('utf-8', {fatal: true}).decode(canonicalRequestBytes);
+    requestObject = JSON.parse(requestText);
+    validateAdoptionRequest(requestObject, requestText);
+    const ownerBytes = b64urlToBytes(encodedOwner);
+    const ownerText = new TextDecoder('utf-8', {fatal: true}).decode(ownerBytes);
+    priorOwnerEvidence = JSON.parse(ownerText);
+    await validatePriorOwnerTransport(priorOwnerEvidence, ownerText);
+    heading.textContent = 'Trading-AI stable-owner candidate possession proof';
+    warning.textContent = 'The stable passkey is NOT currently owner authority and cannot promote itself. Fresh C2 owner authorization is transported separately and will be independently re-verified by the repository.';
+    instructions.textContent = 'Use the exact Trading-AI passkey from any compatible owner-controlled client (including iPhone or Mac). This page proves possession only and does not write production trust or activate C3b.';
+    requestBox.textContent = JSON.stringify({adoption_request: requestObject, prior_owner_authorization_transport: priorOwnerEvidence}, null, 2);
+    actionButton.textContent = 'Prove possession of exact Trading-AI stable candidate';
+    actionButton.disabled = false;
+    return;
+  }
+
+  if (encodedEnrollment && params.size === 1) {
+    mode = 'enroll';
+    canonicalRequestB64url = encodedEnrollment;
+    canonicalRequestBytes = b64urlToBytes(encodedEnrollment);
+    const text = new TextDecoder('utf-8', {fatal: true}).decode(canonicalRequestBytes);
+    requestObject = JSON.parse(text);
+    validateEnrollmentRequest(requestObject, text);
+    heading.textContent = 'Trading-AI stable owner enrollment';
+    warning.textContent = 'Candidate enrollment only. This page does not activate owner trust, C3b, signer trust, GitHub status, VPS access, execution or capital authority.';
+    instructions.textContent = 'Verify the exact Trading-AI source SHA and digests below before creating the stable-origin credential candidate.';
+    requestBox.textContent = JSON.stringify(requestObject, null, 2);
+    actionButton.textContent = 'Create stable-origin credential candidate';
+    actionButton.disabled = false;
+    return;
+  }
+
+  throw new Error('expected #enroll=<request> or #adopt=<request>&owner=<fresh-C2-evidence>');
+}
 async function createCredentialCandidate() {
-  if (!requestObject || !canonicalRequestBytes) throw new Error('no validated request loaded');
-  if (window.location.origin !== EXPECTED_ORIGIN) throw new Error('origin changed after request validation');
   const challenge = new Uint8Array(await crypto.subtle.digest('SHA-256', canonicalRequestBytes));
   const credential = await navigator.credentials.create({
     publicKey: {
       challenge,
       rp: { id: EXPECTED_RP_ID, name: 'Trading-AI Owner Approval' },
-      user: {
-        id: b64urlToBytes(requestObject.user_handle_b64url),
-        name: 'trading-ai:owner',
-        displayName: 'Trading-AI Owner'
-      },
-      pubKeyCredParams: [
-        { type: 'public-key', alg: -7 },
-        { type: 'public-key', alg: -8 }
-      ],
-      authenticatorSelection: {
-        residentKey: 'required',
-        userVerification: 'required'
-      },
+      user: { id: b64urlToBytes(requestObject.user_handle_b64url), name: 'trading-ai:owner', displayName: 'Trading-AI Owner' },
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -8 }],
+      authenticatorSelection: { residentKey: 'required', userVerification: 'required' },
       attestation: 'none',
       timeout: 120000
     }
@@ -141,52 +215,101 @@ async function createCredentialCandidate() {
   if (!credential || credential.type !== 'public-key') throw new Error('no WebAuthn public-key credential returned');
   const response = credential.response;
   const transports = typeof response.getTransports === 'function' ? response.getTransports() : [];
-  const requestHash = 'sha256:' + bytesToHex(challenge);
-  const credentialResponse = {
-    id: credential.id,
-    rawId: bytesToB64url(credential.rawId),
-    type: credential.type,
-    response: {
-      attestationObject: bytesToB64url(response.attestationObject),
-      clientDataJSON: bytesToB64url(response.clientDataJSON),
-      transports
-    },
-    clientExtensionResults: credential.getClientExtensionResults(),
-    authenticatorAttachment: credential.authenticatorAttachment || null
-  };
+  const challengeDigest = 'sha256:' + bytesToHex(challenge);
   const evidence = {
-    schema_version: '1.0.0',
-    project_id: EXPECTED_PROJECT,
-    repository: EXPECTED_REPOSITORY,
-    action_id: EXPECTED_ACTION,
-    request_sha256: requestHash,
-    exact_source_sha: requestObject.exact_source_sha,
+    schema_version: '1.0.0', project_id: EXPECTED_PROJECT, repository: EXPECTED_REPOSITORY,
+    action_id: ENROLL_ACTION, request_sha256: challengeDigest, exact_source_sha: requestObject.exact_source_sha,
     credential_id_b64url: bytesToB64url(credential.rawId),
-    credential_response: credentialResponse,
-    credential_class: EXPECTED_CLASS,
-    origin: EXPECTED_ORIGIN,
-    rp_id: EXPECTED_RP_ID,
+    credential_response: {
+      id: credential.id, rawId: bytesToB64url(credential.rawId), type: credential.type,
+      response: { attestationObject: bytesToB64url(response.attestationObject), clientDataJSON: bytesToB64url(response.clientDataJSON), transports },
+      clientExtensionResults: credential.getClientExtensionResults(), authenticatorAttachment: credential.authenticatorAttachment || null
+    },
+    credential_class: EXPECTED_CLASS, origin: EXPECTED_ORIGIN, rp_id: EXPECTED_RP_ID,
     user_handle_b64url: requestObject.user_handle_b64url,
     evidence_state: 'PUBLIC_STABLE_OWNER_CREDENTIAL_CANDIDATE',
-    private_material_included: false,
-    production_trust_active: false,
-    authority_granted: false
+    private_material_included: false, production_trust_active: false, authority_granted: false
   };
-  evidenceBox.textContent = canonicalJson(evidence);
+  evidenceText = canonicalJson(evidence);
 }
-
-enrollButton.addEventListener('click', () => {
-  enrollButton.disabled = true;
-  evidenceBox.textContent = 'Waiting for WebAuthn registration...';
-  createCredentialCandidate().catch(error => {
-    evidenceBox.textContent = 'DENY: ' + String(error);
-    enrollButton.disabled = false;
+async function proveCandidatePossession() {
+  if (!requestObject || !priorOwnerEvidence || !canonicalRequestBytes || !canonicalRequestB64url) throw new Error('no validated adoption request/prior-owner transport loaded');
+  const challenge = new Uint8Array(await crypto.subtle.digest('SHA-256', canonicalRequestBytes));
+  const credential = await navigator.credentials.get({
+    publicKey: {
+      challenge,
+      rpId: EXPECTED_RP_ID,
+      allowCredentials: [{ type: 'public-key', id: b64urlToBytes(requestObject.candidate_credential_id_b64url) }],
+      userVerification: 'required',
+      timeout: 120000
+    }
   });
+  if (!credential || credential.type !== 'public-key') throw new Error('no WebAuthn public-key credential returned');
+  const credentialId = bytesToB64url(credential.rawId);
+  if (credential.id !== credentialId || credentialId !== requestObject.candidate_credential_id_b64url) throw new Error('candidate credential ID mismatch');
+  const response = credential.response;
+  const userHandle = response.userHandle === null ? null : bytesToB64url(response.userHandle);
+  if (userHandle !== null && userHandle !== requestObject.candidate_user_handle_b64url) throw new Error('candidate userHandle mismatch');
+  if (Object.keys(credential.getClientExtensionResults()).length !== 0) throw new Error('unexpected WebAuthn client extensions');
+  const requestHash = 'sha256:' + bytesToHex(challenge);
+  const possession = {
+    schema_version: '1.0.0', project_id: EXPECTED_PROJECT, repository: EXPECTED_REPOSITORY,
+    action_id: ADOPT_ACTION, exact_source_sha: requestObject.exact_source_sha,
+    request_b64url: canonicalRequestB64url, request_sha256: requestHash,
+    credential_id_b64url: credentialId,
+    credential_response: {
+      id: credentialId, rawId: credentialId, type: credential.type,
+      response: {
+        clientDataJSON: bytesToB64url(response.clientDataJSON),
+        authenticatorData: bytesToB64url(response.authenticatorData),
+        signature: bytesToB64url(response.signature),
+        userHandle
+      },
+      clientExtensionResults: {},
+      authenticatorAttachment: credential.authenticatorAttachment || null
+    },
+    evidence_state: CANDIDATE_POSSESSION_STATE,
+    production_trust_adopted: false,
+    c3b_activated: false,
+    signer_secret_present: false,
+    vps_channel: 'NON_OPERATIONAL'
+  };
+  const bundle = {
+    schema_version: '1.0.0', project_id: EXPECTED_PROJECT, repository: EXPECTED_REPOSITORY,
+    action_id: ADOPT_ACTION, request_sha256: requestHash,
+    prior_owner_authorization_evidence: priorOwnerEvidence,
+    candidate_possession_evidence: possession,
+    evidence_state: DUAL_PROOF_STATE,
+    production_trust_adopted: false,
+    c3b_activated: false,
+    signer_secret_present: false,
+    vps_channel: 'NON_OPERATIONAL'
+  };
+  evidenceText = canonicalJson(bundle);
+}
+actionButton.addEventListener('click', async () => {
+  actionButton.disabled = true;
+  copyButton.disabled = true;
+  evidenceText = null;
+  evidenceBox.textContent = mode === 'adopt' ? 'Waiting for exact Trading-AI candidate possession proof...' : 'Waiting for Trading-AI WebAuthn registration...';
+  try {
+    if (mode === 'adopt') await proveCandidatePossession();
+    else if (mode === 'enroll') await createCredentialCandidate();
+    else throw new Error('unknown ceremony mode');
+    evidenceBox.textContent = evidenceText;
+    copyButton.disabled = false;
+  } catch (error) {
+    evidenceBox.textContent = 'DENY: ' + String(error);
+    actionButton.disabled = false;
+  }
 });
-
+copyButton.addEventListener('click', async () => {
+  if (!evidenceText) return;
+  await navigator.clipboard.writeText(evidenceText);
+});
 loadRequest().catch(error => {
   requestBox.textContent = 'DENY: ' + String(error);
-  evidenceBox.textContent = 'No credential created.';
+  evidenceBox.textContent = 'No credential or evidence produced.';
 });
 </script>
 </body>
