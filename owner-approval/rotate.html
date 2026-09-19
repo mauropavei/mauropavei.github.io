@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; img-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; font-src 'none'; manifest-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Trading-AI Owner Credential Rotation</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 58rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.45; }
+    pre { white-space: pre-wrap; word-break: break-word; border: 1px solid currentColor; padding: 1rem; }
+    button { font: inherit; padding: .65rem 1rem; margin-right: .5rem; }
+    .warn { font-weight: 700; }
+  </style>
+</head>
+<body>
+  <h1 id="heading">Trading-AI owner credential rotation</h1>
+  <p class="warn" id="warning">Evidence only. This page cannot activate, retire, or promote a credential and cannot create signer, VPS, execution, or capital authority.</p>
+  <p id="instructions">Load an exact repository-generated rotation URL.</p>
+  <pre id="request">No request loaded.</pre>
+  <button id="act" disabled>Continue</button>
+  <button id="copy" disabled>Copy public evidence</button>
+  <pre id="evidence">No evidence produced.</pre>
+<script>
+'use strict';
+
+const EXPECTED_ORIGIN = 'https://mauropavei.github.io';
+const EXPECTED_RP_ID = 'mauropavei.github.io';
+const PROJECT_ID = 'trading-ai';
+const REPOSITORY = 'mauropavei/Trading-AI';
+const CREDENTIAL_CLASS = 'PLATFORM_RND';
+const ENROLL_ACTION = 'C3B_OWNER_CREDENTIAL_ROTATION_ENROLLMENT';
+const ENROLL_EFFECT = 'CREATE_INERT_LEVEL2_ROTATION_CANDIDATE_ONLY_NO_AUTHORITY';
+const ROTATE_ACTION = 'C3B_OWNER_CREDENTIAL_ROTATION';
+const ROTATE_EFFECT = 'ROTATE_EXACT_LEVEL2_OWNER_CREDENTIAL_ONLY_NO_SIGNER_NO_EXECUTION';
+const ENROLL_STATE = 'PUBLIC_OWNER_CREDENTIAL_ROTATION_ENROLLMENT_NON_AUTHORIZING';
+const ASSERTION_STATE = 'PUBLIC_OWNER_CREDENTIAL_ROTATION_ASSERTION_TRANSPORT_NON_AUTHORIZING';
+const MAX_TTL_MS = 600000;
+
+const ENROLL_FIELDS = [
+  'action_id', 'authority_effect', 'authority_surface_manifest_digest',
+  'candidate_credential_class', 'candidate_origin', 'candidate_rp_id',
+  'candidate_user_handle_b64url', 'exact_source_sha', 'expires_at', 'issued_at',
+  'nonce', 'policy_digest', 'prior_credential_id_b64url',
+  'prior_protected_owner_digest', 'project_id', 'repository', 'schema_version'
+].sort();
+
+const ROTATE_FIELDS = [
+  'action_id', 'authority_effect', 'authority_surface_manifest_digest',
+  'candidate_credential_class', 'candidate_credential_id_b64url',
+  'candidate_enrollment_evidence_digest', 'candidate_origin',
+  'candidate_public_key_b64url', 'candidate_rp_id', 'candidate_sign_count',
+  'candidate_user_handle_b64url', 'exact_source_sha', 'expires_at', 'issued_at',
+  'nonce', 'policy_digest', 'prior_credential_id_b64url',
+  'prior_protected_owner_digest', 'project_id', 'repository', 'schema_version'
+].sort();
+
+const requestBox = document.getElementById('request');
+const evidenceBox = document.getElementById('evidence');
+const actionButton = document.getElementById('act');
+const copyButton = document.getElementById('copy');
+const heading = document.getElementById('heading');
+const instructions = document.getElementById('instructions');
+
+let mode = null;
+let requestObject = null;
+let requestBytes = null;
+let evidenceText = null;
+
+function bytesToB64url(value) {
+  const bytes = new Uint8Array(value);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  let out = btoa(binary).split('+').join('-').split('/').join('_');
+  while (out.endsWith('=')) out = out.slice(0, -1);
+  return out;
+}
+
+function b64urlToBytes(value) {
+  if (typeof value !== 'string' || value.length === 0 || value.includes('=') || !/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new Error('value must be canonical unpadded base64url');
+  }
+  const normalized = value.split('-').join('+').split('_').join('/');
+  const padded = normalized + '='.repeat((4 - normalized.length % 4) % 4);
+  const binary = atob(padded);
+  const bytes = Uint8Array.from(binary, ch => ch.charCodeAt(0));
+  if (bytesToB64url(bytes) !== value) throw new Error('non-canonical base64url');
+  return bytes;
+}
+
+function canonicalJson(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return JSON.stringify(value);
+  return '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + canonicalJson(value[key])).join(',') + '}';
+}
+
+function bytesToHex(value) {
+  return Array.from(new Uint8Array(value), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function sha256(value) {
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', value));
+}
+
+function requireDigest(value, field) {
+  if (typeof value !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(value)) {
+    throw new Error('invalid digest: ' + field);
+  }
+}
+
+function requireFresh(value) {
+  const issued = Date.parse(value.issued_at);
+  const expires = Date.parse(value.expires_at);
+  const now = Date.now();
+  if (!Number.isFinite(issued) || !Number.isFinite(expires) || expires <= issued || expires - issued > MAX_TTL_MS) {
+    throw new Error('invalid request lifetime');
+  }
+  if (now < issued || now > expires) throw new Error('request is not fresh');
+}
+
+function parseCanonicalRequest(encoded, expectedFields) {
+  const bytes = b64urlToBytes(encoded);
+  const text = new TextDecoder('utf-8', {fatal: true}).decode(bytes);
+  const value = JSON.parse(text);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('request root must be object');
+  if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(expectedFields)) throw new Error('request field set mismatch');
+  if (canonicalJson(value) !== text) throw new Error('request bytes are not canonical JSON');
+  if (value.schema_version !== '1.0.0' || value.project_id !== PROJECT_ID || value.repository !== REPOSITORY) {
+    throw new Error('wrong project/repository');
+  }
+  if (typeof value.exact_source_sha !== 'string' || !/^[0-9a-f]{40}$/.test(value.exact_source_sha)) {
+    throw new Error('invalid exact source SHA');
+  }
+  requireDigest(value.policy_digest, 'policy_digest');
+  requireDigest(value.authority_surface_manifest_digest, 'authority_surface_manifest_digest');
+  requireDigest(value.prior_protected_owner_digest, 'prior_protected_owner_digest');
+  b64urlToBytes(value.prior_credential_id_b64url);
+  b64urlToBytes(value.candidate_user_handle_b64url);
+  if (value.candidate_origin !== EXPECTED_ORIGIN || value.candidate_rp_id !== EXPECTED_RP_ID) {
+    throw new Error('wrong candidate origin/RP');
+  }
+  if (value.candidate_credential_class !== CREDENTIAL_CLASS) throw new Error('wrong credential class');
+  requireFresh(value);
+  return {value, bytes};
+}
+
+function validateEnrollment(value) {
+  if (value.action_id !== ENROLL_ACTION || value.authority_effect !== ENROLL_EFFECT) {
+    throw new Error('wrong rotation enrollment action/effect');
+  }
+  if (typeof value.nonce !== 'string' || !/^tai-c3b-rotate-enroll-[A-Za-z0-9_-]{20,160}$/.test(value.nonce)) {
+    throw new Error('invalid rotation enrollment nonce');
+  }
+}
+
+function validateRotation(value) {
+  if (value.action_id !== ROTATE_ACTION || value.authority_effect !== ROTATE_EFFECT) {
+    throw new Error('wrong rotation action/effect');
+  }
+  b64urlToBytes(value.candidate_credential_id_b64url);
+  b64urlToBytes(value.candidate_public_key_b64url);
+  requireDigest(value.candidate_enrollment_evidence_digest, 'candidate_enrollment_evidence_digest');
+  if (!Number.isInteger(value.candidate_sign_count) || value.candidate_sign_count < 0) {
+    throw new Error('invalid candidate sign_count');
+  }
+  if (value.candidate_credential_id_b64url === value.prior_credential_id_b64url) {
+    throw new Error('candidate credential must differ from predecessor');
+  }
+  if (typeof value.nonce !== 'string' || !/^tai-c3b-rotate-[A-Za-z0-9_-]{20,160}$/.test(value.nonce)) {
+    throw new Error('invalid rotation nonce');
+  }
+}
+
+async function loadRequest() {
+  if (window.location.origin !== EXPECTED_ORIGIN || window.location.hostname !== EXPECTED_RP_ID) {
+    throw new Error('rotation portal must run only on the frozen Trading-AI HTTPS origin/RP');
+  }
+  const params = new URLSearchParams(window.location.hash.slice(1));
+  const options = [
+    ['rotate-enroll', 'enroll'],
+    ['rotate-prior', 'prior'],
+    ['rotate-candidate', 'candidate']
+  ].filter(item => params.has(item[0]));
+  if (params.size !== 1 || options.length !== 1) {
+    throw new Error('expected exactly one rotation fragment');
+  }
+  mode = options[0][1];
+  const encoded = params.get(options[0][0]);
+  const parsed = parseCanonicalRequest(encoded, mode === 'enroll' ? ENROLL_FIELDS : ROTATE_FIELDS);
+  requestObject = parsed.value;
+  requestBytes = parsed.bytes;
+  if (mode === 'enroll') {
+    validateEnrollment(requestObject);
+    heading.textContent = 'Trading-AI replacement credential enrollment';
+    instructions.textContent = 'Create a new synchronized resident PLATFORM_RND passkey. It remains inert until a separately verified protected rotation completes.';
+    actionButton.textContent = 'Create inert replacement passkey';
+  } else {
+    validateRotation(requestObject);
+    const prior = mode === 'prior';
+    heading.textContent = prior ? 'Authorize exact owner credential rotation' : 'Prove possession of replacement credential';
+    instructions.textContent = prior
+      ? 'Present the currently ACTIVE Trading-AI owner credential. This assertion authorizes only the exact replacement bound in the request.'
+      : 'Present the exact replacement credential. This is possession evidence only and does not activate it.';
+    actionButton.textContent = prior ? 'Authorize exact rotation' : 'Prove replacement possession';
+  }
+  requestBox.textContent = JSON.stringify(requestObject, null, 2);
+  actionButton.disabled = false;
+}
+
+async function createInertCandidate() {
+  const challenge = await sha256(requestBytes);
+  const credential = await navigator.credentials.create({
+    publicKey: {
+      challenge,
+      rp: {id: EXPECTED_RP_ID, name: 'Trading-AI Owner Approval'},
+      user: {
+        id: b64urlToBytes(requestObject.candidate_user_handle_b64url),
+        name: 'trading-ai:owner',
+        displayName: 'Trading-AI Owner'
+      },
+      pubKeyCredParams: [
+        {type: 'public-key', alg: -7},
+        {type: 'public-key', alg: -8}
+      ],
+      authenticatorSelection: {
+        authenticatorAttachment: 'platform',
+        residentKey: 'required',
+        userVerification: 'required'
+      },
+      excludeCredentials: [
+        {type: 'public-key', id: b64urlToBytes(requestObject.prior_credential_id_b64url)}
+      ],
+      attestation: 'none',
+      timeout: 120000
+    }
+  });
+  if (!credential || credential.type !== 'public-key') throw new Error('no WebAuthn public-key registration returned');
+  const credentialId = bytesToB64url(credential.rawId);
+  if (credential.id !== credentialId || credentialId === requestObject.prior_credential_id_b64url) {
+    throw new Error('replacement credential identity invalid');
+  }
+  const extensions = credential.getClientExtensionResults();
+  if (Object.keys(extensions).length !== 0) throw new Error('unexpected WebAuthn client extensions');
+  const response = credential.response;
+  const transports = typeof response.getTransports === 'function' ? response.getTransports() : [];
+  const evidence = {
+    schema_version: '1.0.0',
+    project_id: PROJECT_ID,
+    repository: REPOSITORY,
+    action_id: ENROLL_ACTION,
+    request_sha256: 'sha256:' + bytesToHex(challenge),
+    exact_source_sha: requestObject.exact_source_sha,
+    credential_id_b64url: credentialId,
+    credential_response: {
+      id: credentialId,
+      rawId: credentialId,
+      type: credential.type,
+      response: {
+        attestationObject: bytesToB64url(response.attestationObject),
+        clientDataJSON: bytesToB64url(response.clientDataJSON),
+        transports
+      },
+      clientExtensionResults: {},
+      authenticatorAttachment: credential.authenticatorAttachment || null
+    },
+    credential_class: CREDENTIAL_CLASS,
+    user_handle_b64url: requestObject.candidate_user_handle_b64url,
+    origin: EXPECTED_ORIGIN,
+    rp_id: EXPECTED_RP_ID,
+    evidence_state: ENROLL_STATE,
+    private_material_included: false,
+    production_trust_active: false,
+    authority_review_eligible: false,
+    authority_granted: false
+  };
+  evidenceText = canonicalJson(evidence);
+}
+
+async function createAssertionTransport() {
+  const prior = mode === 'prior';
+  const role = prior ? 'PRIOR_OWNER_AUTHORIZATION' : 'CANDIDATE_POSSESSION';
+  const expectedId = prior
+    ? requestObject.prior_credential_id_b64url
+    : requestObject.candidate_credential_id_b64url;
+  const challenge = await sha256(requestBytes);
+  const credential = await navigator.credentials.get({
+    publicKey: {
+      challenge,
+      rpId: EXPECTED_RP_ID,
+      userVerification: 'required',
+      timeout: 120000
+    }
+  });
+  if (!credential || credential.type !== 'public-key') throw new Error('no WebAuthn public-key assertion returned');
+  const credentialId = bytesToB64url(credential.rawId);
+  if (credential.id !== credentialId || credentialId !== expectedId) throw new Error('credential ID mismatch');
+  const extensions = credential.getClientExtensionResults();
+  if (Object.keys(extensions).length !== 0) throw new Error('unexpected WebAuthn client extensions');
+  const response = credential.response;
+  if (response.userHandle === null) throw new Error('project user handle missing');
+  const userHandle = bytesToB64url(response.userHandle);
+  if (userHandle !== requestObject.candidate_user_handle_b64url) throw new Error('project user handle mismatch');
+  const transport = {
+    schema_version: '1.0.0',
+    project_id: PROJECT_ID,
+    repository: REPOSITORY,
+    action_id: ROTATE_ACTION,
+    role,
+    request_sha256: 'sha256:' + bytesToHex(challenge),
+    credential_response: {
+      id: credentialId,
+      rawId: credentialId,
+      type: credential.type,
+      response: {
+        clientDataJSON: bytesToB64url(response.clientDataJSON),
+        authenticatorData: bytesToB64url(response.authenticatorData),
+        signature: bytesToB64url(response.signature),
+        userHandle
+      },
+      clientExtensionResults: {},
+      authenticatorAttachment: credential.authenticatorAttachment || null
+    },
+    evidence_state: ASSERTION_STATE,
+    private_material_included: false,
+    authority_granted_by_transport: false,
+    signer_activated_by_transport: false,
+    production_verifier_active_by_transport: false,
+    execution_authority_by_transport: false,
+    vps_channel: 'NON_OPERATIONAL'
+  };
+  evidenceText = canonicalJson(transport);
+}
+
+actionButton.addEventListener('click', async () => {
+  actionButton.disabled = true;
+  copyButton.disabled = true;
+  evidenceText = null;
+  evidenceBox.textContent = 'Waiting for WebAuthn...';
+  try {
+    if (mode === 'enroll') await createInertCandidate();
+    else await createAssertionTransport();
+    evidenceBox.textContent = evidenceText;
+    copyButton.disabled = false;
+  } catch (error) {
+    evidenceBox.textContent = 'DENY: ' + String(error);
+    actionButton.disabled = false;
+  }
+});
+
+copyButton.addEventListener('click', async () => {
+  if (!evidenceText) return;
+  await navigator.clipboard.writeText(evidenceText);
+});
+
+loadRequest().catch(error => {
+  requestBox.textContent = 'DENY: ' + String(error);
+  evidenceBox.textContent = 'No credential or evidence produced.';
+});
+</script>
+</body>
+</html>
