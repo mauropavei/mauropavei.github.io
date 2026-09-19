@@ -286,6 +286,9 @@ async function createAssertionTransport() {
     publicKey: {
       challenge,
       rpId: EXPECTED_RP_ID,
+      allowCredentials: [
+        {type: 'public-key', id: b64urlToBytes(expectedId)}
+      ],
       userVerification: 'required',
       timeout: 120000
     }
